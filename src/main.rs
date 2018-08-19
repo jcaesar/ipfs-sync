@@ -1,7 +1,6 @@
 extern crate ipfsapi;
 extern crate failure;
 extern crate humantime;
-extern crate shuffled_iter;
 #[macro_use] extern crate clap;
 
 use ipfsapi::IpfsApi;
