@@ -1,0 +1,12 @@
+[package]
+name = "ripfs"
+version = "0.1.0"
+authors = ["toef"]
+
+[dependencies]
+#ipfsapi = "0.2"
+ipfsapi = { path = "../rust-ipfs-api", version = "0.2" }
+clap = "2.26"
+failure = "0.1"
+humantime = "1.1.1"
+shuffled-iter = "0.2.0"
