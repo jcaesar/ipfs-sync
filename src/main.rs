@@ -35,7 +35,8 @@ impl fmt::Display for RTError {
 
 struct Env<'a> {
     verbosity: u64,
-    flush: &'a mut FnMut() -> Fallible<()>
+    flush: &'a mut FnMut() -> Fallible<()>,
+    nocopy: bool,
 }
 
 fn main() {
@@ -48,6 +49,7 @@ fn main() {
 		(@arg apihost: -h --apihost +takes_value "api host - defaults to localhost")
 		(@arg apiport: -p --apiport +takes_value "destination path - defaults to 5001")
 		(@arg flushivl: -f --flush +takes_value "flush interval - only one final flush will be executed if unset")
+		(@arg nocopy: -l --nocopy "Use the filestore")
 		(@arg verbose: -v --verbose ... "Verbosity")
 	).get_matches();
 
@@ -63,9 +65,14 @@ fn main() {
 
     let flushivl: Option<time::Duration> = matches.value_of("flushivl") 
             .map(|ivl| ivl.parse::<humantime::Duration>().expect("Could not parse flush interval").into());
+
+    let nocopy = matches.is_present("nocopy");
  
     match (|| -> Fallible<String> {
         let src = PathBuf::from(arg("src"));
+        let src = if nocopy {
+            fs::canonicalize(&src)?
+        } else { src };
         let dst = api.mfs()
             .autoflush(flushivl.map(|ivl| ivl <= time::Duration::from_secs(0)).unwrap_or(false))
             .cd(arg("dst"));
@@ -83,7 +90,8 @@ fn main() {
         };
         let mut env = Env { 
             verbosity: verbosity,
-            flush: &mut flush
+            flush: &mut flush,
+            nocopy: nocopy,
         };
         re_curse(src, dst.cd("."), &mut env)?;
         dst.flush()?;
@@ -132,8 +140,15 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<()> {
                 Some (ment) => ment.size != md.len(),
                 None => true
             } {
-                let file = fs::File::open(&dp)?;
-                let hash = mfs.api.add().pin(false).read_from(file)?;
+                let mut add = mfs.api.add();
+                let add = add.pin(false);
+                let hash = if env.nocopy {
+                    let add = add.nocopy(true);
+                    add.from_path(&dp)
+                } else {
+                    let file = fs::File::open(&dp)?;
+                    add.read_from(file)
+                } ?;
                 let mfs = mfs.cd(name);
                 mfs.cpf(&hash)?;
                 if env.verbosity >= 1 {
