@@ -163,7 +163,7 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<()> {
        println!("Error processing {:?}: {}", dent, err)
     }; }
     for (ment, _) in mfsents {
-        mfs.cd(&ment).rm()?;
+        mfs.cd(&ment).rmr()?;
     }
     Ok(())
 }
