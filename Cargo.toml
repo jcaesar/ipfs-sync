@@ -10,3 +10,4 @@ ipfsapi = { git = "https://github.com/jcaesar/rust-ipfs-api", rev = "ae8d905708f
 clap = "2.26"
 failure = "0.1"
 humantime = "1.1.1"
+pathdiff = "0.1.0"

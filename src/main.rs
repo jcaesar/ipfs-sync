@@ -1,6 +1,7 @@
 extern crate ipfsapi;
 extern crate failure;
 extern crate humantime;
+extern crate pathdiff;
 #[macro_use] extern crate clap;
 
 use ipfsapi::IpfsApi;
@@ -14,6 +15,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::time;
 use std::os::unix::fs::MetadataExt;
+use pathdiff::diff_paths;
 
 pub type Fallible<T> = Result<T, failure::Error>;
 
@@ -105,19 +107,30 @@ fn main() {
             verbosity: verbosity,
             flush: &mut flush,
             nocopy: nocopy,
-            syncfrom: syncfrom
+            syncfrom: syncfrom,
         };
-        let symlinks = re_curse(PathBuf::from("."), dst.cd("."), &mut env)?;
+        let symlinks = re_curse(PathBuf::from(".").canonicalize()?, dst.cd("."), &mut env)?;
         dst.flush()?;
+        if verbosity >= 2 && !symlinks.is_empty() {
+            println!("Installing {} symlinks as copies", symlinks.len());
+        }
         for symlink in symlinks {
             let symlink = *symlink;
             let (from, to) = symlink;
             let from = from.to_str().ok_or(RTError::new("could not parse symlink source as unicode"))?;
             let to = to.to_str().ok_or(RTError::new("could not parse symlink destination as unicode"))?;
-            let hash = dst.cd(to).stat()?.Hash;
+            println!("{} → {}", from, to);
             let from = dst.cd(from);
-            from.cpf(&hash)?;
-            println!("{} → {}", hash, from.cwd());
+            let to = from.cd(to);
+            match to.stat() {
+                Ok(stat) => {
+                    println!("{} → {}", stat.Hash, from.cwd());
+                    from.cpf(&stat.Hash)?;
+                },
+                Err(err) => {
+                     println!("Could resolve symlink from {} to {} as copy: statting source: {}", from.cwd(), to.cwd(), err);
+                }
+            }
         }
         dst.flush()?;
         Ok(dst.stat()?.Hash)
@@ -142,6 +155,9 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<Symlinks> {
     let mut mfsents : HashSet<String> = (|| {
         match mfs.ls() {
             Err(_err) => {
+                if env.verbosity >= 3 {
+                    println!("Error on initial listing of {}: {}", mfs.cwd(), _err)
+                }
                 mfs.rm().ok();
                 mfs.mkdir()?;
                 if env.verbosity >= 1 {
@@ -154,22 +170,22 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<Symlinks> {
     })()?.into_iter().collect();
     for dent in fs::read_dir(dir)?.filter_map(|e| e.ok()) { if let Err(err) = (|| -> Fallible<()> {
         let dp = dent.path();
-        let dpp = dp.display();
         let ft = dent.file_type()?;
         let name = dent.file_name();
         let name = name.to_str().ok_or(RTError::new("could not parse filename as unicode"))?;
+        let existed = mfsents.remove(name);
         if ft.is_symlink() {
-            let dst = fs::read_link(&dp)?;
+            let src = diff_paths(&dp, &std::env::current_dir()?).ok_or(RTError::new("Could not get relative path for symlink source"))?;
+            let dst = diff_paths(&dp.canonicalize()?, &dp).ok_or(RTError::new("Could not get relative path for symlink destination"))?;
             if env.verbosity >= 2 {
-                println!("Postponing symlink: {} → {}", dpp, dst.display());
+                println!("Postponing symlink: {} → {}", dp.display(), dst.display());
             }
-            ret.push(Box::new((dp.clone(), dst)));
+            ret.push(Box::new((src, dst)));
         } else if ft.is_dir() {
             let mut symlinks = re_curse(dent.path(), mfs.cd(&name), env)?;
-            mfsents.remove(name);
             ret.append(&mut symlinks);
         } else {
-            if mfsents.remove(name) && {
+            if !existed || {
                 if let Some(syncfrom) = env.syncfrom {
                     fs::metadata(&dp)?.ctime() > syncfrom
                 } else {
