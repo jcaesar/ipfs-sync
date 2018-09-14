@@ -5,13 +5,14 @@ extern crate humantime;
 
 use ipfsapi::IpfsApi;
 use ipfsapi::mfs;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::error;
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use std::process::exit;
 use std::time;
+use std::os::unix::fs::MetadataExt;
 
 pub type Fallible<T> = Result<T, failure::Error>;
 
@@ -37,6 +38,7 @@ struct Env<'a> {
     verbosity: u64,
     flush: &'a mut FnMut() -> Fallible<()>,
     nocopy: bool,
+    syncfrom: Option<i64>, // unix file system timestamp as returned by ctime
 }
 
 fn main() {
@@ -49,6 +51,7 @@ fn main() {
 		(@arg apihost: -h --apihost +takes_value "api host - defaults to localhost")
 		(@arg apiport: -p --apiport +takes_value "destination path - defaults to 5001")
 		(@arg flushivl: -f --flush +takes_value "flush interval - only one final flush will be executed if unset")
+		(@arg syncfrom: -a --after +takes_value "sync if the file change time is any later than the given date - only existence will be checked otherwise")
 		(@arg nocopy: -l --nocopy "Use the filestore")
 		(@arg verbose: -v --verbose ... "Verbosity")
 	).get_matches();
@@ -63,11 +66,23 @@ fn main() {
         argdef("apiport", "5001").parse::<u16>().expect("Could not parse IPFS API port")
     );
 
-    let flushivl: Option<time::Duration> = matches.value_of("flushivl") 
+    let flushivl: Option<time::Duration> = matches.value_of("flushivl")
             .map(|ivl| ivl.parse::<humantime::Duration>().expect("Could not parse flush interval").into());
 
+    let syncfrom = matches.value_of("syncfrom").map(|date| {
+        let msg = "Could not parse change time";
+        let parse = date.parse::<humantime::Timestamp>().map(|t| -> time::SystemTime { t.into() });
+        match parse {
+            Ok(t) => t.duration_since(time::SystemTime::UNIX_EPOCH).expect(msg).as_secs() as i64,
+            e => {
+                if date.starts_with("@") { date[1..].parse::<i64>().expect(msg) }
+                else { e.expect(msg); panic!("unreachable") }
+            }
+        }
+    });
+
     let nocopy = matches.is_present("nocopy");
- 
+
     match (|| -> Fallible<String> {
         let src = PathBuf::from(arg("src"));
         let src = if nocopy {
@@ -92,6 +107,7 @@ fn main() {
             verbosity: verbosity,
             flush: &mut flush,
             nocopy: nocopy,
+            syncfrom: syncfrom
         };
         re_curse(src, dst.cd("."), &mut env)?;
         dst.flush()?;
@@ -112,7 +128,7 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<()> {
     if env.verbosity >= 2 {
         println!("Entering {}", mfs.cwd());
     }
-    let mut mfsents : HashMap<String, mfs::MfsNode> = (|| {
+    let mut mfsents : HashSet<String> = (|| {
         match mfs.ls() {
             Err(_err) => {
                 mfs.rm().ok();
@@ -124,21 +140,25 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<()> {
             }
             ok => ok
         }
-    })()?.into_iter().map(|e| (e.name.clone(), e)).collect();
+    })()?.into_iter().collect();
     for dent in fs::read_dir(dir)?.filter_map(|e| e.ok()) { if let Err(err) = (|| -> Fallible<()> { 
         let dp = dent.path();
-        let _dpp = dp.display();
+        let dpp = dp.display();
         let ft = dent.file_type()?;
         let name = dent.file_name();
         let name = name.to_str().ok_or(RTError::new("could not parse filename as unicode"))?;
-        if ft.is_dir() {
+        if ft.is_symlink() {
+            println!("Warning: syncing symlinks is not yet implemented, ignoring {}", dpp)
+        } else if ft.is_dir() {
             re_curse(dent.path(), mfs.cd(&name), env)?;
             mfsents.remove(name);
         } else {
-            let md = dent.metadata()?;
-            if match mfsents.remove(name) {
-                Some (ment) => ment.size != md.len(),
-                None => true
+            if mfsents.remove(name) && {
+                if let Some(syncfrom) = env.syncfrom {
+                    fs::metadata(&dp)?.ctime() > syncfrom
+                } else {
+                    false
+                }
             } {
                 let mut add = mfs.api.add();
                 let add = add.pin(false);
@@ -162,8 +182,8 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<()> {
     )() {
        println!("Error processing {:?}: {}", dent, err)
     }; }
-    for (ment, _) in mfsents {
-        mfs.cd(&ment).rmr()?;
+    for ment in mfsents {
+        mfs.cd(&ment).rm()?;
     }
     Ok(())
 }

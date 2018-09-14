@@ -6,7 +6,7 @@ authors = ["toef"]
 [dependencies]
 #ipfsapi = "0.2"
 #ipfsapi = { path = "../rust-ipfs-api", version = "0.2" }
-ipfsapi = { git = "https://github.com/jcaesar/rust-ipfs-api", rev = "85927cde57c8f1e63544d72eabbf786b8f499088" }
+ipfsapi = { git = "https://github.com/jcaesar/rust-ipfs-api", rev = "ae8d905708f35419faff0d94afdf4111ac5cb70b" }
 clap = "2.26"
 failure = "0.1"
 humantime = "1.1.1"
