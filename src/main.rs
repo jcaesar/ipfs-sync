@@ -6,6 +6,7 @@ extern crate humantime;
 use ipfsapi::IpfsApi;
 use ipfsapi::mfs;
 use std::collections::HashSet;
+use std::env;
 use std::error;
 use std::fmt;
 use std::fs;
@@ -84,10 +85,7 @@ fn main() {
     let nocopy = matches.is_present("nocopy");
 
     match (|| -> Fallible<String> {
-        let src = PathBuf::from(arg("src"));
-        let src = if nocopy {
-            fs::canonicalize(&src)?
-        } else { src };
+        env::set_current_dir(PathBuf::from(arg("src")))?;
         let dst = api.mfs()
             .autoflush(flushivl.map(|ivl| ivl <= time::Duration::from_secs(0)).unwrap_or(false))
             .cd(arg("dst"));
@@ -103,13 +101,24 @@ fn main() {
             }
             Ok(())
         };
-        let mut env = Env { 
+        let mut env = Env {
             verbosity: verbosity,
             flush: &mut flush,
             nocopy: nocopy,
             syncfrom: syncfrom
         };
-        re_curse(src, dst.cd("."), &mut env)?;
+        let symlinks = re_curse(PathBuf::from("."), dst.cd("."), &mut env)?;
+        dst.flush()?;
+        for symlink in symlinks {
+            let symlink = *symlink;
+            let (from, to) = symlink;
+            let from = from.to_str().ok_or(RTError::new("could not parse symlink source as unicode"))?;
+            let to = to.to_str().ok_or(RTError::new("could not parse symlink destination as unicode"))?;
+            let hash = dst.cd(to).stat()?.Hash;
+            let from = dst.cd(from);
+            from.cpf(&hash)?;
+            println!("{} → {}", hash, from.cwd());
+        }
         dst.flush()?;
         Ok(dst.stat()?.Hash)
     })() {
@@ -124,7 +133,9 @@ fn main() {
     }
 }
 
-fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<()> {
+type Symlinks = Vec<Box<(PathBuf, PathBuf)>>;
+fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<Symlinks> {
+    let mut ret : Symlinks = vec![];
     if env.verbosity >= 2 {
         println!("Entering {}", mfs.cwd());
     }
@@ -141,17 +152,22 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<()> {
             ok => ok
         }
     })()?.into_iter().collect();
-    for dent in fs::read_dir(dir)?.filter_map(|e| e.ok()) { if let Err(err) = (|| -> Fallible<()> { 
+    for dent in fs::read_dir(dir)?.filter_map(|e| e.ok()) { if let Err(err) = (|| -> Fallible<()> {
         let dp = dent.path();
         let dpp = dp.display();
         let ft = dent.file_type()?;
         let name = dent.file_name();
         let name = name.to_str().ok_or(RTError::new("could not parse filename as unicode"))?;
         if ft.is_symlink() {
-            println!("Warning: syncing symlinks is not yet implemented, ignoring {}", dpp)
+            let dst = fs::read_link(&dp)?;
+            if env.verbosity >= 2 {
+                println!("Postponing symlink: {} → {}", dpp, dst.display());
+            }
+            ret.push(Box::new((dp.clone(), dst)));
         } else if ft.is_dir() {
-            re_curse(dent.path(), mfs.cd(&name), env)?;
+            let mut symlinks = re_curse(dent.path(), mfs.cd(&name), env)?;
             mfsents.remove(name);
+            ret.append(&mut symlinks);
         } else {
             if mfsents.remove(name) && {
                 if let Some(syncfrom) = env.syncfrom {
@@ -178,12 +194,12 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<()> {
             }
         }
         Ok(())
-    } 
+    }
     )() {
        println!("Error processing {:?}: {}", dent, err)
     }; }
     for ment in mfsents {
         mfs.cd(&ment).rm()?;
     }
-    Ok(())
+    Ok(ret)
 }
