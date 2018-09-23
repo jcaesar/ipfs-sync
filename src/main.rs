@@ -86,7 +86,7 @@ fn main() {
 
     let nocopy = matches.is_present("nocopy");
 
-    match (|| -> Fallible<String> {
+    match (|| -> Fallible<(String, u64)> {
         env::set_current_dir(PathBuf::from(arg("src")))?;
         let dst = api.mfs()
             .autoflush(flushivl.map(|ivl| ivl <= time::Duration::from_secs(0)).unwrap_or(false))
@@ -109,7 +109,8 @@ fn main() {
             nocopy: nocopy,
             syncfrom: syncfrom,
         };
-        let symlinks = re_curse(PathBuf::from(".").canonicalize()?, dst.cd("."), &mut env)?;
+        let mut errs = 0;
+        let symlinks = re_curse(PathBuf::from(".").canonicalize()?, dst.cd("."), &mut env, &mut errs)?;
         dst.flush()?;
         if verbosity >= 2 && !symlinks.is_empty() {
             println!("Installing {} symlinks as copies", symlinks.len());
@@ -137,15 +138,20 @@ fn main() {
                 },
                 Err(err) => {
                      println!("Could resolve symlink from {} to {} as copy: statting source: {}", from.cwd(), to.cwd(), err);
+                     errs += 1;
                 }
             }
         }
         dst.flush()?;
-        Ok(dst.stat()?.Hash)
+        Ok((dst.stat()?.Hash, errs))
     })() {
-        Ok(hash) => {
-            println!("{}", hash);
+        Ok((hash, 0)) => {
+            println!("Success: {}", hash);
             exit(0)
+        },
+        Ok((hash, n)) => {
+            println!("Success with {} errors: {}", hash, n);
+            exit(1)
         },
         Err(err) => {
             println!("Error: {}", err);
@@ -155,7 +161,7 @@ fn main() {
 }
 
 type Symlinks = Vec<(PathBuf, PathBuf)>;
-fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<Symlinks> {
+fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env, errs: &mut u64) -> Fallible<Symlinks> {
     let mut ret : Symlinks = vec![];
     if env.verbosity >= 2 {
         println!("Entering {}", mfs.cwd());
@@ -188,9 +194,9 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<Symlinks> {
             if env.verbosity >= 2 {
                 println!("Postponing symlink: {} → {}", dp.display(), dst.display());
             }
-            ret.push(Box::new((src, dst)));
+            ret.push((src, dst));
         } else if ft.is_dir() {
-            let mut symlinks = re_curse(dent.path(), mfs.cd(&name), env)?;
+            let mut symlinks = re_curse(dent.path(), mfs.cd(&name), env, errs)?;
             ret.append(&mut symlinks);
         } else {
             if !existed || {
@@ -220,7 +226,8 @@ fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<Symlinks> {
         Ok(())
     }
     )() {
-       println!("Error processing {:?}: {}", dent, err)
+       println!("Error processing {:?}: {}", dent, err);
+       *errs += 1;
     }; }
     for ment in mfsents {
         mfs.cd(&ment).rm()?;
