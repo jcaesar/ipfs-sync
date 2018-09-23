@@ -45,6 +45,8 @@ struct Env<'a> {
 }
 
 fn main() {
+    let start_time = SystemTime::now();
+
 	let matches = clap_app!(myapp =>
 		(version: "0.3")
 		(author: "Julius Michaelis <jcipfs@liftm.de>")
@@ -164,14 +166,15 @@ fn main() {
     })() {
         Ok((hash, 0)) => {
             if let Some(ref ff) = syncff {
-                let tss = SystemTime::now()
+                let tss = start_time
                     .duration_since(UNIX_EPOCH)
                     .expect("Could not calculate current UNIX time")
                     .as_secs().to_string();
                 fs::write(ff, tss)
                     .map_err(|err| println!("Warning: error writing sync timestamp: {}", err)).ok();
             };
-            println!("Success: {}", hash);
+            let dur = SystemTime::now().duration_since(start_time).expect("Could not calculate execution time");
+            println!("Success in {}: {}", humantime::Duration::from(dur), hash);
             exit(0)
         },
         Ok((hash, n)) => {
