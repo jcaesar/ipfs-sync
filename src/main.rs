@@ -119,12 +119,21 @@ fn main() {
             let (from, to) = symlink;
             let from = from.to_str().ok_or(RTError::new("could not parse symlink source as unicode"))?;
             let to = to.to_str().ok_or(RTError::new("could not parse symlink destination as unicode"))?;
-            println!("{} → {}", from, to);
+            if verbosity >= 2 {
+                println!("{} → {}", from, to);
+            }
             let from = dst.cd(from);
             let to = from.cd(to);
             match to.stat() {
                 Ok(stat) => {
-                    println!("{} → {}", stat.Hash, from.cwd());
+                    if let Ok(fstat) = from.stat() {
+                        if fstat.Hash == stat.Hash {
+                            continue
+                        }
+                    }
+                    if verbosity >= 1 {
+                        println!("{} → {}", stat.Hash, from.cwd());
+                    }
                     from.cpf(&stat.Hash)?;
                 },
                 Err(err) => {
