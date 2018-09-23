@@ -73,6 +73,7 @@ fn main() {
     let flushivl: Option<Duration> = matches.value_of("flushivl")
             .map(|ivl| ivl.parse::<humantime::Duration>().expect("Could not parse flush interval").into());
 
+    let syncff = matches.value_of("syncff").map(|ff| fs::canonicalize(ff).expect("Could not get absolute path of sync timestamp file"));
     let syncfrom = {
         if let Some(date) = matches.value_of("syncfrom") {
             let msg = "Could not parse change time";
@@ -84,14 +85,14 @@ fn main() {
                     else { e.expect(msg); panic!("unreachable") }
                 }
             })
-        } else if let Some(ff) = matches.value_of("syncff") {
+        } else if let Some(ref ff) = syncff {
             match (|| -> Fallible<i64> {
                 let ffs = fs::read_to_string(ff)?;
                 Ok(ffs.parse::<i64>()?)
             })() {
                 Ok(ts) => Some(ts),
                 Err(err) => {
-                    println!("Warning: error reading sync time limit from {}: {} - syncinc all.", ff, err);
+                    println!("Warning: error reading sync time limit from {}: {} - syncinc all.", ff.display(), err);
                     Some(0)
                 }
             }
@@ -162,7 +163,7 @@ fn main() {
         Ok((dst.stat()?.Hash, errs))
     })() {
         Ok((hash, 0)) => {
-            if let Some(ff) = matches.value_of("syncff") {
+            if let Some(ref ff) = syncff {
                 let tss = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .expect("Could not calculate current UNIX time")
