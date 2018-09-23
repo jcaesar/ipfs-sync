@@ -13,7 +13,7 @@ use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use std::process::exit;
-use std::time;
+use std::time::{ Duration, Instant, SystemTime, UNIX_EPOCH };
 use std::os::unix::fs::MetadataExt;
 use pathdiff::diff_paths;
 
@@ -55,6 +55,7 @@ fn main() {
 		(@arg apiport: -p --apiport +takes_value "destination path - defaults to 5001")
 		(@arg flushivl: -f --flush +takes_value "flush interval - only one final flush will be executed if unset")
 		(@arg syncfrom: -a --after +takes_value "sync if the file change time is any later than the given date - only existence will be checked otherwise")
+		(@arg syncff: -t --tsfile +takes_value "read value for file change time limit from file, and write file upon successful sync")
 		(@arg nocopy: -l --nocopy "Use the filestore")
 		(@arg verbose: -v --verbose ... "Verbosity")
 	).get_matches();
@@ -69,33 +70,48 @@ fn main() {
         argdef("apiport", "5001").parse::<u16>().expect("Could not parse IPFS API port")
     );
 
-    let flushivl: Option<time::Duration> = matches.value_of("flushivl")
+    let flushivl: Option<Duration> = matches.value_of("flushivl")
             .map(|ivl| ivl.parse::<humantime::Duration>().expect("Could not parse flush interval").into());
 
-    let syncfrom = matches.value_of("syncfrom").map(|date| {
-        let msg = "Could not parse change time";
-        let parse = date.parse::<humantime::Timestamp>().map(|t| -> time::SystemTime { t.into() });
-        match parse {
-            Ok(t) => t.duration_since(time::SystemTime::UNIX_EPOCH).expect(msg).as_secs() as i64,
-            e => {
-                if date.starts_with("@") { date[1..].parse::<i64>().expect(msg) }
-                else { e.expect(msg); panic!("unreachable") }
+    let syncfrom = {
+        if let Some(date) = matches.value_of("syncfrom") {
+            let msg = "Could not parse change time";
+            let parse = date.parse::<humantime::Timestamp>().map(|t| -> SystemTime { t.into() });
+            Some(match parse {
+                Ok(t) => t.duration_since(UNIX_EPOCH).expect(msg).as_secs() as i64,
+                e => {
+                    if date.starts_with("@") { date[1..].parse::<i64>().expect(msg) }
+                    else { e.expect(msg); panic!("unreachable") }
+                }
+            })
+        } else if let Some(ff) = matches.value_of("syncff") {
+            match (|| -> Fallible<i64> {
+                let ffs = fs::read_to_string(ff)?;
+                Ok(ffs.parse::<i64>()?)
+            })() {
+                Ok(ts) => Some(ts),
+                Err(err) => {
+                    println!("Warning: error reading sync time limit from {}: {} - syncinc all.", ff, err);
+                    Some(0)
+                }
             }
+        } else {
+            None
         }
-    });
+    };
 
     let nocopy = matches.is_present("nocopy");
 
     match (|| -> Fallible<(String, u64)> {
         env::set_current_dir(PathBuf::from(arg("src")))?;
         let dst = api.mfs()
-            .autoflush(flushivl.map(|ivl| ivl <= time::Duration::from_secs(0)).unwrap_or(false))
+            .autoflush(flushivl.map(|ivl| ivl <= Duration::from_secs(0)).unwrap_or(false))
             .cd(arg("dst"));
         let flushdst = dst.cd(".");
-        let mut nextflush = time::Instant::now();
+        let mut nextflush = Instant::now();
         let mut flush = || {
             if let Some(flushivl) = flushivl {
-                let now = time::Instant::now();
+                let now = Instant::now();
                 if now > nextflush {
                     flushdst.flush()?;
                     nextflush = now + flushivl;
@@ -146,6 +162,14 @@ fn main() {
         Ok((dst.stat()?.Hash, errs))
     })() {
         Ok((hash, 0)) => {
+            if let Some(ff) = matches.value_of("syncff") {
+                let tss = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Could not calculate current UNIX time")
+                    .as_secs().to_string();
+                fs::write(ff, tss)
+                    .map_err(|err| println!("Warning: error writing sync timestamp: {}", err)).ok();
+            };
             println!("Success: {}", hash);
             exit(0)
         },
