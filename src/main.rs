@@ -115,7 +115,6 @@ fn main() {
             println!("Installing {} symlinks as copies", symlinks.len());
         }
         for symlink in symlinks {
-            let symlink = *symlink;
             let (from, to) = symlink;
             let from = from.to_str().ok_or(RTError::new("could not parse symlink source as unicode"))?;
             let to = to.to_str().ok_or(RTError::new("could not parse symlink destination as unicode"))?;
@@ -155,7 +154,7 @@ fn main() {
     }
 }
 
-type Symlinks = Vec<Box<(PathBuf, PathBuf)>>;
+type Symlinks = Vec<(PathBuf, PathBuf)>;
 fn re_curse(dir: PathBuf, mfs: mfs::MFS, env: &mut Env) -> Fallible<Symlinks> {
     let mut ret : Symlinks = vec![];
     if env.verbosity >= 2 {
